@@ -93,3 +93,4 @@ results/
 # Saved environments.
 saved_environments/
 venv/
+primal_results/
