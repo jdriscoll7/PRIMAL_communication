@@ -17,6 +17,7 @@ if DYNAMIC_TESTING:
     from ACNet import ACNet
     
 def init(data):
+    data.a_dist = {}
     data.size=10
     data.state=np.zeros((data.size,data.size)).astype(int)
     data.goals=np.zeros((data.size,data.size)).astype(int)
@@ -183,6 +184,22 @@ def observe(data,agent_id,goals):
         return ([poss_map,goal_map,obs_map],[dx,dy,mag])
 
 def timerFired(data):
+    if DYNAMIC_TESTING and data.paused:
+        for (x,y) in data.agent_positions:
+            ID=data.state[x,y]
+            observation=observe(data,ID,GOALS)
+            rnn_state=data.rnn_states[ID-1]#yes minus 1 is correct
+            a_dist,v,rnn_state,blocking = data.sess.run([data.network.policy,data.network.value,data.network.state_out,data.network.blocking], 
+                                                   feed_dict={data.network.inputs:[observation[0]],
+                                                            data.network.goal_pos:[observation[1]],
+                                                            data.network.state_in[0]:rnn_state[0],
+                                                            data.network.state_in[1]:rnn_state[1]})
+            data.blocking_confidences[ID-1]=np.ravel(blocking)[0]
+            data.a_dist[ID-1] = a_dist
+            print(a_dist)
+            print("\n\n")
+
+    
     if DYNAMIC_TESTING and not data.paused:
         for (x,y) in data.agent_positions:
             ID=data.state[x,y]
@@ -207,9 +224,13 @@ def timerFired(data):
             # No collision: we can carry out the action
             data.state[ax,ay] = 0
             data.state[ax+dx,ay+dy] = ID
-            data.agent_positions[ID-1] = (ax+dx,ay+dy)            
+            data.agent_positions[ID-1] = (ax+dx,ay+dy)
+            data.a_dist[ID-1] = a_dist
+            print(a_dist)
+            print("\n\n")
 
 def redrawAll(canvas, data):
+    np.set_printoptions(formatter={'float': lambda x: "{0:0.1f}".format(x)})
     for r in range(data.state.shape[0]):
         y=(data.height/data.state.shape[0])*r
         color_depth=30
@@ -227,8 +248,11 @@ def redrawAll(canvas, data):
                                                     fill=mycolor, width=0)  
                 confidence=data.blocking_confidences[data.state[r,c]-1]
                 confidence="%.0001f"%confidence
+                #print("r: %d, c: %d, state: %f" % (r, c, data.state[r,c]))
+                print(data.a_dist)
+                a_dist = data.a_dist.setdefault(data.state[r,c]-1, np.zeros((1, 5)))
                 canvas.create_text(x+data.width/data.state.shape[0]/2, y+data.height/data.state.shape[1]/2,
-                                                   fill='black', anchor="s",text=confidence,font="Arial 30 bold")                 
+                                                    fill='black', anchor="s",text=a_dist,font="Arial 10 bold")                 
             if data.goals[r,c]>0:
                 color=hsv_to_rgb(np.array([(data.goals[r,c]%color_depth)/float(color_depth),1,1]))
                 color*=255
@@ -236,10 +260,10 @@ def redrawAll(canvas, data):
                 mycolor = '#%02x%02x%02x' % (color[0], color[1], color[2])
                 if data.state[r,c]==data.goals[r,c]:
                     canvas.create_text(x+data.width/data.state.shape[0]/2, y+data.height/data.state.shape[1]/2,
-                                                        fill="black", anchor="center",text="+",font="Arial 50 bold")
+                                                        fill="black", anchor="center",text="+",font="Arial 5 bold")
                 else:
                     canvas.create_text(x+data.width/data.state.shape[0]/2, y+data.height/data.state.shape[1]/2,
-                                                       fill=mycolor, anchor="center",text="+",font="Arial 50 bold")      
+                                                       fill=mycolor, anchor="center",text="+",font="Arial 5 bold")      
     for r in range(data.state.shape[0]):
         y=(data.height/data.state.shape[0])*r
         canvas.create_line(0,y,data.width,y,fill="black")

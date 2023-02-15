@@ -89,3 +89,7 @@ auto/
 ###################
 __pycache__/
 results/
+
+# Saved environments.
+saved_environments/
+venv/

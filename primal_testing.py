@@ -130,14 +130,16 @@ if __name__ == "__main__":
 #    import sys
 #    num_agents = int(sys.argv[1])
 
-    primal=PRIMAL('model_primal',10)
+    test_sizes = [10,20]
+
+    primal=PRIMAL('./model_primal',10)
     num_agents = 2
 
     while num_agents < 1024:
         num_agents *= 2
 
         print("Starting tests for %d agents" % num_agents)
-        for size in [10,20,40,80,160]:
+        for size in test_sizes:
             if size==10 and num_agents>32:continue
             if size==20 and num_agents>128:continue
             if size==40 and num_agents>512:continue
