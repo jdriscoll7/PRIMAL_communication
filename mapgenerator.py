@@ -5,19 +5,23 @@ import time
 from matplotlib.colors import hsv_to_rgb
 import numpy as np
 import os
+import copy
 
 DYNAMIC_TESTING=True
 GOALS=True
 output_path="environments"
 model_path="model_primal"
 dirDict = {0:(0,0),1:(0,1),2:(1,0),3:(0,-1),4:(-1,0),5:(1,1),6:(1,-1),7:(-1,-1),8:(-1,1)}
+dir_english_dict = {0: "S", 1: "R", 2: "D", 3: "L", 4: "U"}
 
 if DYNAMIC_TESTING:
     import tensorflow as tf
     from ACNet import ACNet
     
 def init(data):
+    data.v_list = []
     data.a_dist = {}
+    data.v = {}
     data.size=10
     data.state=np.zeros((data.size,data.size)).astype(int)
     data.goals=np.zeros((data.size,data.size)).astype(int)
@@ -183,7 +187,98 @@ def observe(data,agent_id,goals):
     else:
         return ([poss_map,goal_map,obs_map],[dx,dy,mag])
 
+
+def number_to_base(n, b):
+    if n == 0:
+        return [0]
+    digits = []
+    while n:
+        digits.append(int(n % b))
+        n //= b
+    return digits[::-1]
+
+
+def pad_list_zeros(input_list, n_agents):
+    if len(input_list) < n_agents:
+        return ([0]*(n_agents - len(input_list))) + input_list
+    else:
+        return input_list
+        
+
+
+def apply_action(data, agent, action):
+    
+    successful_action = False
+    
+    dx,dy = getDir(action)
+    ax,ay = data.agent_positions[agent]
+    if(ax+dx>=data.state.shape[0] or ax+dx<0 or ay+dy>=data.state.shape[1] or ay+dy<0):#out of bounds
+        return successful_action
+    if(data.state[ax+dx,ay+dy]<0):#collide with static obstacle
+        return successful_action
+    
+    # No collision: we can carry out the action
+    successful_action = True
+    
+    data.state[ax,ay] = 0
+    data.state[ax+dx,ay+dy] = agent + 1
+    data.agent_positions[agent] = (ax+dx,ay+dy)
+    
+    return successful_action
+
+
+def undo_action(data, previous_state, previous_positions):
+    
+    
+    data.state = previous_state
+    data.agent_positions = previous_positions
+    
+
+def future_observe(data, agent_id, goals):
+    
+    n_agents = len(data.agent_positions)
+    observations = [None for _ in range(5**n_agents)]
+
+    # Keep dictionary for tracking temporary moves of agents.
+    agent_moves = {move:0 for move in range(n_agents)}
+
+    # Save current data state to restore later.
+    save_state = copy.deepcopy(data.state)
+    save_positions = copy.deepcopy(data.agent_positions)
+
+    # Generate all 5^(n_agents) observations.
+    for i in range(5**n_agents):
+        
+        valid_moves = [None for _ in range(n_agents)]
+        
+        #print(number_to_base(i, 5))
+        
+        for j, mod_state in enumerate(pad_list_zeros(number_to_base(i, 5), n_agents)):
+            agent_moves[j] = mod_state
+            
+        # Apply the actions, make observation, undo the action.
+        for agent, move_id in agent_moves.items():
+            valid_moves[agent] = apply_action(data, agent, move_id)
+        
+        if False not in valid_moves:
+            observations[i] = observe(data, agent_id, goals)
+        
+        # Apply the actions, make observation, undo the action.
+        #undo_action(data, save_state, save_positions)    
+        data.state = copy.deepcopy(save_state)
+        data.agent_positions = copy.deepcopy(save_positions)
+    
+    return observations
+    
+
 def timerFired(data):
+    
+    n_agents = len(data.agent_positions)
+    actions_size = 5**n_agents
+    
+    data.v_list = [[0 for _ in range(n_agents)] for _ in range(actions_size)]
+    a_dist_list = [None for _ in range(actions_size)]
+    
     if DYNAMIC_TESTING and data.paused:
         for (x,y) in data.agent_positions:
             ID=data.state[x,y]
@@ -194,11 +289,33 @@ def timerFired(data):
                                                             data.network.goal_pos:[observation[1]],
                                                             data.network.state_in[0]:rnn_state[0],
                                                             data.network.state_in[1]:rnn_state[1]})
-            data.blocking_confidences[ID-1]=np.ravel(blocking)[0]
+            #data.blocking_confidences[ID-1]=np.ravel(blocking)[0]
+            #data.rnn_states[ID-1]=rnn_state
+            
+            #print(data.network.inputs)
+            #print(observation[0])
+            for i, f_observation in enumerate(future_observe(data,ID,GOALS)):
+                if f_observation is not None:
+                    a_dist_list[i], v_list_add, _, __ = data.sess.run([data.network.policy,data.network.value,data.network.state_out,data.network.blocking], 
+                                                   feed_dict={data.network.inputs:[f_observation[0]],
+                                                            data.network.goal_pos:[f_observation[1]],
+                                                            data.network.state_in[0]:rnn_state[0],
+                                                            data.network.state_in[1]:rnn_state[1]})
+            
+                    data.v_list[i][ID - 1] = v_list_add[0, 0]
+            
+            print("\n----a_dist_list----\n")
+            print(a_dist_list)
+            
+            
             data.a_dist[ID-1] = a_dist
-            print(a_dist)
-            print("\n\n")
-
+            data.v[ID-1] = v
+        
+        print("\n----v_list----\n")
+            
+        for i, v_dist in enumerate(data.v_list):
+            english_move_list = [dir_english_dict[k] for k in pad_list_zeros(number_to_base(i, 5), n_agents)]
+            print(str(english_move_list) + ": " + str(v_dist))
     
     if DYNAMIC_TESTING and not data.paused:
         for (x,y) in data.agent_positions:
@@ -210,7 +327,11 @@ def timerFired(data):
                                                             data.network.goal_pos:[observation[1]],
                                                             data.network.state_in[0]:rnn_state[0],
                                                             data.network.state_in[1]:rnn_state[1]})
-            data.rnn_states[ID-1]=rnn_state      
+
+
+
+
+            data.rnn_states[ID-1]=rnn_state
             data.blocking_confidences[ID-1]=np.ravel(blocking)[0]
             action=np.argmax(a_dist)
             dx,dy =getDir(action)
@@ -226,11 +347,12 @@ def timerFired(data):
             data.state[ax+dx,ay+dy] = ID
             data.agent_positions[ID-1] = (ax+dx,ay+dy)
             data.a_dist[ID-1] = a_dist
-            print(a_dist)
-            print("\n\n")
+            data.v[ID-1] = v
+
 
 def redrawAll(canvas, data):
-    np.set_printoptions(formatter={'float': lambda x: "{0:0.1f}".format(x)})
+    #np.set_printoptions(formatter={'float': lambda x: "{0:0.3f}".format(x)})
+    np.set_printoptions(precision=5)
     for r in range(data.state.shape[0]):
         y=(data.height/data.state.shape[0])*r
         color_depth=30
@@ -249,10 +371,12 @@ def redrawAll(canvas, data):
                 confidence=data.blocking_confidences[data.state[r,c]-1]
                 confidence="%.0001f"%confidence
                 #print("r: %d, c: %d, state: %f" % (r, c, data.state[r,c]))
-                print(data.a_dist)
-                a_dist = data.a_dist.setdefault(data.state[r,c]-1, np.zeros((1, 5)))
-                canvas.create_text(x+data.width/data.state.shape[0]/2, y+data.height/data.state.shape[1]/2,
-                                                    fill='black', anchor="s",text=a_dist,font="Arial 10 bold")                 
+                #a_dist = data.a_dist.setdefault(data.state[r,c]-1, np.zeros((1, 5))).T
+                v = data.v.setdefault(data.state[r,c]-1, np.zeros((1, 5))).T
+                #print("agent:" + str(data.state[r,c]) + ", action:" + str(a_dist.T) + "\n")
+                canvas.create_text(x, y,
+                                                    #fill='black', anchor="nw",text=a_dist,font="Arial 10 bold")
+                                                    fill='black', anchor="nw",text=v,font="Arial 10 bold")                 
             if data.goals[r,c]>0:
                 color=hsv_to_rgb(np.array([(data.goals[r,c]%color_depth)/float(color_depth),1,1]))
                 color*=255
