@@ -19,6 +19,7 @@ if DYNAMIC_TESTING:
     from ACNet import ACNet
     
 def init(data):
+    data.communication_mode = False
     data.v_list = []
     data.a_dist = {}
     data.v = {}
@@ -115,6 +116,8 @@ def keyPressed(event, data):
         data.mode="goal"
     elif event.keysym=="a":
         data.mode="agent"
+    elif event.keysym=="q":
+        data.communication_mode = not data.communication_mode
     elif event.keysym=='Up':
         data.size+=1
         data.state=np.zeros((data.size,data.size)).astype(int)
@@ -227,13 +230,6 @@ def apply_action(data, agent, action):
     return successful_action
 
 
-def undo_action(data, previous_state, previous_positions):
-    
-    
-    data.state = previous_state
-    data.agent_positions = previous_positions
-    
-
 def future_observe(data, agent_id, goals):
     
     n_agents = len(data.agent_positions)
@@ -263,8 +259,6 @@ def future_observe(data, agent_id, goals):
         if False not in valid_moves:
             observations[i] = observe(data, agent_id, goals)
         
-        # Apply the actions, make observation, undo the action.
-        #undo_action(data, save_state, save_positions)    
         data.state = copy.deepcopy(save_state)
         data.agent_positions = copy.deepcopy(save_positions)
     
@@ -276,8 +270,9 @@ def timerFired(data):
     n_agents = len(data.agent_positions)
     actions_size = 5**n_agents
     
-    data.v_list = [[0 for _ in range(n_agents)] for _ in range(actions_size)]
+    data.v_list = [[-100 for _ in range(n_agents)] for _ in range(actions_size)]
     a_dist_list = [None for _ in range(actions_size)]
+    rnn_state_list = [None for _ in range(actions_size)]
     
     if DYNAMIC_TESTING and data.paused:
         for (x,y) in data.agent_positions:
@@ -289,8 +284,9 @@ def timerFired(data):
                                                             data.network.goal_pos:[observation[1]],
                                                             data.network.state_in[0]:rnn_state[0],
                                                             data.network.state_in[1]:rnn_state[1]})
+
             #data.blocking_confidences[ID-1]=np.ravel(blocking)[0]
-            #data.rnn_states[ID-1]=rnn_state
+            data.rnn_states[ID-1]=rnn_state
             
             #print(data.network.inputs)
             #print(observation[0])
@@ -304,9 +300,6 @@ def timerFired(data):
             
                     data.v_list[i][ID - 1] = v_list_add[0, 0]
             
-            print("\n----a_dist_list----\n")
-            print(a_dist_list)
-            
             
             data.a_dist[ID-1] = a_dist
             data.v[ID-1] = v
@@ -315,25 +308,63 @@ def timerFired(data):
             
         for i, v_dist in enumerate(data.v_list):
             english_move_list = [dir_english_dict[k] for k in pad_list_zeros(number_to_base(i, 5), n_agents)]
-            print(str(english_move_list) + ": " + str(v_dist))
+            print(str(english_move_list) + ": " + str(v_dist) + "\t\t " + str(sum(v_dist)))
     
     if DYNAMIC_TESTING and not data.paused:
+        print(data.goals)
         for (x,y) in data.agent_positions:
             ID=data.state[x,y]
             observation=observe(data,ID,GOALS)
-            rnn_state=data.rnn_states[ID-1]#yes minus 1 is correct
+            rnn_state_old =data.rnn_states[ID-1]#yes minus 1 is correct
             a_dist,v,rnn_state,blocking = data.sess.run([data.network.policy,data.network.value,data.network.state_out,data.network.blocking], 
                                                    feed_dict={data.network.inputs:[observation[0]],
                                                             data.network.goal_pos:[observation[1]],
+                                                            data.network.state_in[0]:rnn_state_old[0],
+                                                            data.network.state_in[1]:rnn_state_old[1]})
+
+
+            print("\n\n")
+            print(v)
+            print("\n")
+            print(data.agent_positions)
+            print("\n\n")
+
+            for i, f_observation in enumerate(future_observe(data,ID,GOALS)):
+                    if f_observation is not None:
+                        a_dist_list[i], v_list_add, rnn_state_list[i], __ = data.sess.run([data.network.policy,data.network.value,data.network.state_out,data.network.blocking], 
+                                                   feed_dict={data.network.inputs:[f_observation[0]],
+                                                            data.network.goal_pos:[f_observation[1]],
                                                             data.network.state_in[0]:rnn_state[0],
                                                             data.network.state_in[1]:rnn_state[1]})
+                        
+            
+                        data.v_list[i][ID - 1] = v_list_add[0, 0]
 
-
-
-
+            if data.communication_mode:
+                               
+                
+                action=np.argmax([sum(pair) for pair in data.v_list])
+                rnn_state = rnn_state_list[action]
+                print("\n")
+                print([sum(pair) for pair in data.v_list])
+                print("\n\n")
+                print(pad_list_zeros(number_to_base(action, 5), n_agents))
+                print("\n\n")
+                action = pad_list_zeros(number_to_base(action, 5), n_agents)[ID-1]
+                
+            else:
+                action = np.argmax(a_dist)
+            
+            
+            print("\n----v_list----\n")
+            
+            for i, v_dist in enumerate(data.v_list):
+                english_move_list = [dir_english_dict[k] for k in pad_list_zeros(number_to_base(i, 5), n_agents)]
+                print(str(english_move_list) + ": " + str(v_dist) + "\t\t " + str(sum(v_dist)))
+            
             data.rnn_states[ID-1]=rnn_state
-            data.blocking_confidences[ID-1]=np.ravel(blocking)[0]
-            action=np.argmax(a_dist)
+            #data.blocking_confidences[ID-1]=np.ravel(blocking)[0]
+            
             dx,dy =getDir(action)
             ax,ay =data.agent_positions[ID-1]
             if(ax+dx>=data.state.shape[0] or ax+dx<0 or ay+dy>=data.state.shape[1] or ay+dy<0):#out of bounds
