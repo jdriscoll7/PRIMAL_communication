@@ -191,6 +191,16 @@ def observe(data,agent_id,goals):
         return ([poss_map,goal_map,obs_map],[dx,dy,mag])
 
 
+def agent_on_goal(data, agent_id):
+
+    on_goal = False
+    
+    if data.goals[np.where(data.state == agent_id)] == agent_id:
+        on_goal = True
+        
+    return on_goal
+    
+
 def number_to_base(n, b):
     if n == 0:
         return [0]
@@ -219,6 +229,8 @@ def apply_action(data, agent, action):
         return successful_action
     if(data.state[ax+dx,ay+dy]<0):#collide with static obstacle
         return successful_action
+    if(data.state[ax+dx,ay+dy]>0 and data.state[ax+dx,ay+dy] != agent + 1):
+        return successful_action
     
     # No collision: we can carry out the action
     successful_action = True
@@ -228,6 +240,54 @@ def apply_action(data, agent, action):
     data.agent_positions[agent] = (ax+dx,ay+dy)
     
     return successful_action
+
+
+def apply_joint_action(data, actions):
+    
+    n_agents = len(data.agent_positions)
+    
+    # Table of action offsets for all agents.
+    dx_list = [0 for _ in range(n_agents)]
+    dy_list = [0 for _ in range(n_agents)]
+    
+    ax_list = [0 for _ in range(n_agents)]
+    ay_list = [0 for _ in range(n_agents)]
+    
+    px_list = [0 for _ in range(n_agents)]
+    py_list = [0 for _ in range(n_agents)]
+    
+    for ID, action in enumerate(actions):
+        
+        dx_list[ID], dy_list[ID] = getDir(action)
+        ax_list[ID], ay_list[ID] = list(zip(*np.where(data.state == ID + 1)))[0]
+        
+        px_list[ID] = ax_list[ID] + dx_list[ID]
+        py_list[ID] = ay_list[ID] + dy_list[ID]
+        
+        
+    # Detect collisions, early return if detected.
+    for ID, action in enumerate(actions):
+        
+        # Detect duplicate positions - doesn't count pass-throughs.
+        p_list = list(zip(px_list, py_list))
+        print(p_list)
+        print("\n")
+        print(list(zip(ax_list, ay_list)))
+        print(list(zip(dx_list, dy_list)))
+        if len(set(p_list)) !=  len(p_list):
+            print("Collision detected - no move made. \n")
+            return
+    
+    # Apply actions if no collisions detected.
+    for ID, dx in enumerate(dx_list):
+    
+        ax = ax_list[ID]
+        ay = ay_list[ID]
+        dy = dy_list[ID]
+    
+        data.state[ax,ay] = 0
+        data.state[ax+dx,ay+dy] = ID + 1
+        data.agent_positions[ID] = (ax+dx,ay+dy)
 
 
 def future_observe(data, agent_id, goals):
@@ -268,11 +328,12 @@ def future_observe(data, agent_id, goals):
 def timerFired(data):
     
     n_agents = len(data.agent_positions)
+    actions = [0 for _ in range(n_agents)]
     actions_size = 5**n_agents
     
     data.v_list = [[-100 for _ in range(n_agents)] for _ in range(actions_size)]
     a_dist_list = [None for _ in range(actions_size)]
-    rnn_state_list = [None for _ in range(actions_size)]
+    rnn_state_list = [[None for _ in range(actions_size)] for _ in range(n_agents)]
     
     if DYNAMIC_TESTING and data.paused:
         for (x,y) in data.agent_positions:
@@ -299,7 +360,13 @@ def timerFired(data):
                                                             data.network.state_in[1]:rnn_state[1]})
             
                     data.v_list[i][ID - 1] = v_list_add[0, 0]
-            
+                    
+                    if (0 == pad_list_zeros(number_to_base(i, 5), n_agents)[ID-1]):
+                        if not agent_on_goal(data, ID):
+                            data.v_list[i][ID - 1] += -0.5
+                    else:
+                        data.v_list[i][ID - 1] += -0.3
+                        
             
             data.a_dist[ID-1] = a_dist
             data.v[ID-1] = v
@@ -311,7 +378,7 @@ def timerFired(data):
             print(str(english_move_list) + ": " + str(v_dist) + "\t\t " + str(sum(v_dist)))
     
     if DYNAMIC_TESTING and not data.paused:
-        print(data.goals)
+        
         for (x,y) in data.agent_positions:
             ID=data.state[x,y]
             observation=observe(data,ID,GOALS)
@@ -322,63 +389,62 @@ def timerFired(data):
                                                             data.network.state_in[0]:rnn_state_old[0],
                                                             data.network.state_in[1]:rnn_state_old[1]})
 
-
-            print("\n\n")
-            print(v)
-            print("\n")
-            print(data.agent_positions)
-            print("\n\n")
-
             for i, f_observation in enumerate(future_observe(data,ID,GOALS)):
                     if f_observation is not None:
-                        a_dist_list[i], v_list_add, rnn_state_list[i], __ = data.sess.run([data.network.policy,data.network.value,data.network.state_out,data.network.blocking], 
+                        a_dist_list[i], v_list_add, rnn_state_list[ID-1][i], __ = data.sess.run([data.network.policy,data.network.value,data.network.state_out,data.network.blocking], 
                                                    feed_dict={data.network.inputs:[f_observation[0]],
                                                             data.network.goal_pos:[f_observation[1]],
-                                                            data.network.state_in[0]:rnn_state[0],
-                                                            data.network.state_in[1]:rnn_state[1]})
-                        
+                                                            data.network.state_in[0]:rnn_state_old[0],
+                                                            data.network.state_in[1]:rnn_state_old[1]})
             
                         data.v_list[i][ID - 1] = v_list_add[0, 0]
 
-            if data.communication_mode:
-                               
-                
-                action=np.argmax([sum(pair) for pair in data.v_list])
-                rnn_state = rnn_state_list[action]
-                print("\n")
-                print([sum(pair) for pair in data.v_list])
-                print("\n\n")
-                print(pad_list_zeros(number_to_base(action, 5), n_agents))
-                print("\n\n")
-                action = pad_list_zeros(number_to_base(action, 5), n_agents)[ID-1]
-                
-            else:
-                action = np.argmax(a_dist)
+                        if (0 == pad_list_zeros(number_to_base(i, 5), n_agents)[ID-1]):
+                            if not agent_on_goal(data, ID):
+                                data.v_list[i][ID - 1] += -0.5
+                        else:
+                            data.v_list[i][ID - 1] += -0.3
+
             
-            
-            print("\n----v_list----\n")
-            
-            for i, v_dist in enumerate(data.v_list):
-                english_move_list = [dir_english_dict[k] for k in pad_list_zeros(number_to_base(i, 5), n_agents)]
-                print(str(english_move_list) + ": " + str(v_dist) + "\t\t " + str(sum(v_dist)))
             
             data.rnn_states[ID-1]=rnn_state
-            #data.blocking_confidences[ID-1]=np.ravel(blocking)[0]
-            
-            dx,dy =getDir(action)
-            ax,ay =data.agent_positions[ID-1]
-            if(ax+dx>=data.state.shape[0] or ax+dx<0 or ay+dy>=data.state.shape[1] or ay+dy<0):#out of bounds
-                continue
-            if(data.state[ax+dx,ay+dy]<0):#collide with static obstacle
-                continue
-            if(data.state[ax+dx,ay+dy]>0):#collide with robot
-                continue
-            # No collision: we can carry out the action
-            data.state[ax,ay] = 0
-            data.state[ax+dx,ay+dy] = ID
-            data.agent_positions[ID-1] = (ax+dx,ay+dy)
             data.a_dist[ID-1] = a_dist
             data.v[ID-1] = v
+            #data.blocking_confidences[ID-1]=np.ravel(blocking)[0]
+            
+            
+        if n_agents > 0:
+           
+            if data.communication_mode:
+                optimal_joint_action = np.argmax([sum(pair) for pair in data.v_list])
+                actions = pad_list_zeros(number_to_base(optimal_joint_action, 5), n_agents)
+                
+                # Update rnn states for next computation.
+                #for i, g in enumerate(actions):
+                #    data.rnn_states[i] = rnn_state_list[i][optimal_joint_action]
+
+            else:
+                for agent_id in range(n_agents):
+                    actions[agent_id] = np.argmax(data.a_dist[agent_id])
+            
+            
+        print("\n----a_dist----\n")
+        for i, a_dist in enumerate(a_dist_list):
+            english_move_list = [dir_english_dict[k] for k in pad_list_zeros(number_to_base(i, 5), n_agents)]
+            print(str(english_move_list) + ": " + str(a_dist) + "\t\t " + str(sum(data.v_list[i])))
+            
+            print("\n")
+        
+        print("\n\n----v_list----\n")
+        
+        for i, v_dist in enumerate(data.v_list):
+            english_move_list = [dir_english_dict[k] for k in pad_list_zeros(number_to_base(i, 5), n_agents)]
+            print(str(english_move_list) + ": " + str(v_dist) + "\t\t " + str(sum(v_dist)))
+            
+        
+        if n_agents > 0:
+            print("actions: " + str(actions))
+            apply_joint_action(data, actions)
 
 
 def redrawAll(canvas, data):
